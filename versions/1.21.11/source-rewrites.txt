@@ -1,0 +1,12 @@
+# Names Mojang changed in 1.21.9 to 1.21.11 (see build.gradle): the shared sources keep the 1.21.1 names
+ResourceLocation -> Identifier
+net.minecraft.client.renderer.RenderType -> net.minecraft.client.renderer.rendertype.RenderType
+net.minecraft.Util -> net.minecraft.util.Util
+amera.getPosition() -> amera.position()
+getMainCamera().getPosition() -> getMainCamera().position()
+amera.getEntity() -> amera.entity()
+amera().getEntity() -> amera().entity()
+Profile().getName() -> Profile().name()
+getWindow().getWindow() -> getWindow().handle()
+invertYMouse() -> invertMouseY()
+dimension().location() -> dimension().identifier()

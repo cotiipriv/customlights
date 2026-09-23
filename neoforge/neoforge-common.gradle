@@ -1,0 +1,184 @@
+// Shared by every neoforge/<version> build (applied from their build.gradle, after the ModDevGradle plugin). The mod
+// compiles from the same layers as the Fabric build (see gradle/layered-sources.gradle): the shared sources, this game
+// version's overlays and classes, then neoforge/shared (the NeoForge entry point and the small stand-ins for the
+// Fabric API calls) and this build's own classes. The sources are copied with their Fabric API imports pointed at
+// those stand-ins, so the shared code stays untouched.
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = "${mod_id}-neoforge-${minecraft_version}"
+}
+
+repositories {
+    // Sodium and Iris: only in the development game, to test compatibility (never bundled)
+    maven {
+        name = 'Modrinth'
+        url = 'https://api.modrinth.com/maven'
+        content {
+            includeGroup 'maven.modrinth'
+        }
+    }
+    mavenCentral()
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(java_version as int)
+
+def repoRoot = file('../..')
+
+neoForge {
+    version = neoforge_version
+
+    runs {
+        client {
+            client()
+            gameDirectory = project.file('run')
+            systemProperty 'customlights.devtest', project.findProperty('devtest') ?: 'false'
+            systemProperty 'customlights.devtest.quit', project.findProperty('devtestQuit') ?: 'false'
+            systemProperty 'customlights.devtest.scene', project.findProperty('devtestScene') ?: 'smoke'
+            programArguments.addAll('--username', 'CotiiDev')
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+// What this game version cannot compile and the names Mojang changed in it: read from the Fabric build's own
+// properties, so both builds always agree
+def versionProperties = new Properties()
+def versionPropertiesFile = new File(repoRoot, "versions/${minecraft_version}/gradle.properties")
+if (versionPropertiesFile.exists()) {
+    versionPropertiesFile.withInputStream { versionProperties.load(it) }
+}
+
+apply from: new File(repoRoot, 'gradle/layered-sources.gradle')
+def layers = []
+['main', 'client'].each { set -> layers.add(new File(repoRoot, "src/${set}/java")) }
+['main', 'client'].each { set -> layers.addAll(overlayJavaDirs(repoRoot, project.findProperty('version_overlays') as String, set)) }
+['main', 'client'].each { set -> layers.add(new File(repoRoot, "versions/${minecraft_version}/src/${set}/java")) }
+layers.add(file('../shared/java'))
+layers.add(file('src/main/java'))
+// The Fabric entry point and the optional GeckoLib mixin stay out, plus whatever this version cannot compile
+def excludedPaths = ['com/cotii/customlights/client/CustomlightsClient.java', 'com/cotii/customlights/client/mixin/geckolib/']
+excludedPaths.addAll((versionProperties.getProperty('excluded_sources') ?: '').tokenize(',')*.trim().findAll { it })
+// Stand-ins this version replaces with another name of its own
+excludedPaths.addAll((project.findProperty('extra_excluded_sources') ?: '').toString().tokenize(',')*.trim().findAll { it })
+applyLayeredJavaSources(sourceSets.main, layers, excludedPaths)
+
+// Copy of the chosen sources with the Fabric API imports pointed at neoforge/shared's stand-ins
+def chosen = [:]
+sourceSets.main.java.asFileTree.visit { details ->
+    if (!details.directory) {
+        chosen[details.relativePath.pathString] = details.file
+    }
+}
+def rewrittenDir = layout.buildDirectory.dir('rewritten-src').get().asFile
+// The Fabric API imports point at neoforge/shared's stand-ins, and on top of that the names Mojang changed in this
+// version get the same treatment as in the Fabric build (versions/<mc>/source-rewrites.txt)
+def rewrites = [
+    ['net.fabricmc.fabric.api.', 'com.cotii.customlights.neoforge.fabric.'],
+    ['net.fabricmc.loader.api.FabricLoader', 'com.cotii.customlights.neoforge.fabric.loader.FabricLoader'],
+]
+def rewriteLines = (versionProperties.getProperty('source_rewrites') ?: '').tokenize(',')
+def rewritesFile = new File(repoRoot, "versions/${minecraft_version}/source-rewrites.txt")
+if (rewritesFile.exists()) {
+    rewriteLines.addAll(rewritesFile.readLines().findAll { !it.trim().isEmpty() && !it.trim().startsWith('#') })
+}
+rewriteLines.addAll((project.findProperty('extra_source_rewrites') ?: '').toString().tokenize(','))
+rewrites.addAll(rewriteLines.collect { it.split('->', 2)*.trim() as String[] }.findAll { it.length == 2 }.collect { [it[0], it[1]] })
+
+def rewriteSources = tasks.register('rewriteSources', Sync) {
+    chosen.each { path, source ->
+        from(source) {
+            into(path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : '')
+        }
+    }
+    into rewrittenDir
+    inputs.property('rewrites', rewrites.collect { it.join('->') }.join(','))
+    filteringCharset = 'UTF-8'
+    filter { String line ->
+        def result = line
+        // A plain name is replaced as a whole word; anything longer (a call, a package) exactly as written
+        rewrites.each { pair ->
+            def plainName = pair[0] ==~ /\w+/
+            def pattern = plainName ? "\\b${pair[0]}\\b" : java.util.regex.Pattern.quote(pair[0]) + (pair[0] ==~ /.*\w/ ? '\\b' : '')
+            result = result.replaceAll(pattern, java.util.regex.Matcher.quoteReplacement(pair[1]))
+        }
+        result
+    }
+}
+sourceSets.main.java.srcDirs = [rewrittenDir]
+sourceSets.main.java.setExcludes([])
+tasks.named('compileJava') { dependsOn rewriteSources }
+tasks.matching { it.name == 'sourcesJar' }.configureEach { dependsOn rewriteSources }
+
+sourceSets {
+    main {
+        resources {
+            srcDirs = [
+                'src/main/resources',
+                new File(repoRoot, "versions/${minecraft_version}/src/client/resources"),
+                new File(repoRoot, "versions/${minecraft_version}/src/main/resources"),
+                new File(repoRoot, 'src/client/resources'),
+                new File(repoRoot, 'src/main/resources')
+            ]
+            exclude 'fabric.mod.json'
+            exclude 'customlights.geckolib.mixins.json'
+        }
+    }
+}
+
+dependencies {
+    // -PnoCompat=true runs without them
+    if (!project.hasProperty('noCompat') && project.findProperty('sodium_version')) {
+        runtimeOnly "maven.modrinth:sodium:${sodium_version}"
+        if (project.findProperty('iris_version')) {
+            runtimeOnly "maven.modrinth:iris:${iris_version}"
+        }
+    }
+}
+
+tasks.withType(AbstractCopyTask).configureEach {
+    // A version's resources (its mixin lists) replace the shared ones
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+processResources {
+    def props = [
+        minecraft_version: minecraft_version,
+        minecraft_next: minecraft_next,
+        loader_major: neoforge_version.tokenize('.')[0],
+        mod_id: mod_id,
+        mod_name: mod_name,
+        mod_version: mod_version,
+        mod_authors: mod_authors,
+        mod_license: mod_license,
+        mod_description: mod_description
+    ]
+    inputs.properties props
+    filesMatching(['META-INF/neoforge.mods.toml', 'META-INF/mods.toml']) {
+        expand props
+    }
+    // NeoForge runs on the official names, so the mixins need no refmap
+    filesMatching('*.mixins.json') {
+        filter { line ->
+            line.replace('"compatibilityLevel": "JAVA_21"', "\"compatibilityLevel\": \"JAVA_${java_version}\"")
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = (java_version as int)
+    options.encoding = 'UTF-8'
+}
+
+jar {
+    from(new File(repoRoot, 'LICENSE')) {
+        rename { "${it}_${mod_id}" }
+    }
+}

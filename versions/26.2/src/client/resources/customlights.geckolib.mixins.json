@@ -1,0 +1,9 @@
+{
+	"required": false,
+	"package": "com.cotii.customlights.client.mixin.geckolib",
+	"compatibilityLevel": "JAVA_21",
+	"client": [],
+	"injectors": {
+		"defaultRequire": 0
+	}
+}

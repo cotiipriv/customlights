@@ -1,0 +1,11 @@
+{
+	"required": false,
+	"package": "com.cotii.customlights.client.mixin.iris",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"IrisHandRendererMixin"
+	],
+	"injectors": {
+		"defaultRequire": 0
+	}
+}

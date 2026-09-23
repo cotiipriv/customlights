@@ -1,0 +1,45 @@
+{
+	"schemaVersion": 1,
+	"id": "customlights",
+	"version": "${version}",
+	"name": "CustomLights",
+	"description": "Client-side colored lights with shapes, volumetric atmosphere, loop animations, a live editor, model bone lights (GeckoLib, ModelEngine, item models) and an optional server plugin.",
+	"authors": [
+		"Cotii_"
+	],
+	"license": "CC0-1.0",
+	"icon": "assets/customlights/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.cotii.customlights.client.CustomlightsClient"
+		]
+	},
+	"mixins": [
+		{
+			"config": "customlights.client.mixins.json",
+			"environment": "client"
+		},
+		{
+			"config": "customlights.geckolib.mixins.json",
+			"environment": "client"
+		},
+		{
+			"config": "customlights.extra.mixins.json",
+			"environment": "client"
+		},
+		{
+			"config": "customlights.iris.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.16.0",
+		"minecraft": "${minecraft_dependency}",
+		"java": ">=${java_version}",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"geckolib": "*"
+	}
+}

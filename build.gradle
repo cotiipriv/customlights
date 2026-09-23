@@ -1,0 +1,278 @@
+plugins {
+	id 'maven-publish'
+}
+
+def mcTarget = providers.gradleProperty('mc_target').orElse(project.minecraft_version).get()
+def targetPropertiesFile = file("versions/${mcTarget}/gradle.properties")
+if (targetPropertiesFile.exists()) {
+	def targetProperties = new Properties()
+	targetPropertiesFile.withInputStream { targetProperties.load(it) }
+	targetProperties.each { key, value -> project.ext.set(key.toString(), value.toString()) }
+}
+def targetJavaVersion = (findProperty('java_version') ?: '21').toString().toInteger()
+// 26.x is unobfuscated: the plain Loom plugin, Mojang names without mappings or remapping (declared in stonecutter.gradle.kts)
+def unobfuscated = mcTarget.startsWith('26')
+apply plugin: unobfuscated ? 'net.fabricmc.fabric-loom' : 'net.fabricmc.fabric-loom-remap'
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = "${rootProject.name}-${mcTarget}"
+}
+
+repositories {
+	mavenCentral()
+	// Sodium and Iris: only in the development game, to test compatibility (never bundled)
+	maven {
+		name = "Modrinth"
+		url = "https://api.modrinth.com/maven"
+		content {
+			includeGroup "maven.modrinth"
+		}
+	}
+	// GeckoLib: optional integration (bones named customlights_<id>), compile only
+	maven {
+		name = 'GeckoLib'
+		url = 'https://dl.cloudsmith.io/public/geckolib3/geckolib/maven/'
+		content {
+			includeGroup 'software.bernie.geckolib'
+		}
+	}
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"customlights" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+
+	runs {
+		// A fixed player name: the local Paper test server (CustomlightsPLUGIN/run-server) has it as operator
+		client {
+			programArgs "--username", "CotiiDev"
+		}
+		// Opens a superflat test world, places lights and saves screenshots (see DevAutoTest)
+		devtest {
+			inherit client
+			name "Dev Test"
+			vmArg "-Dcustomlights.devtest=true"
+			vmArg "-Dcustomlights.devtest.quit=${project.findProperty('devtestQuit') ?: 'false'}"
+			vmArg "-Dcustomlights.devtest.scene=${project.findProperty('devtestScene') ?: 'full'}"
+		}
+	}
+}
+
+// Shared sources, then the overlays listed in versions/<mc>/gradle.properties (version_overlays), then the
+// classes only this version needs. See gradle/layered-sources.gradle.
+apply from: rootProject.file('gradle/layered-sources.gradle')
+def repoRoot = rootProject.projectDir
+['main', 'client'].each { sourceSetName ->
+	def javaLayers = [new File(repoRoot, "src/${sourceSetName}/java")]
+	javaLayers.addAll(overlayJavaDirs(repoRoot, findProperty('version_overlays') as String, sourceSetName))
+	javaLayers.add(new File(repoRoot, "versions/${mcTarget}/src/${sourceSetName}/java"))
+	// Without GeckoLib for this version, its optional bone mixin is left out, plus whatever the version cannot compile
+	def excludedPaths = new ArrayList<String>()
+	if (!findProperty('geckolib_version')) {
+		excludedPaths.add('com/cotii/customlights/client/mixin/geckolib/')
+	}
+	excludedPaths.addAll((findProperty('excluded_sources') ?: '').toString().tokenize(',').collect { it.trim() }.findAll { it })
+	applyLayeredJavaSources(sourceSets.getByName(sourceSetName), javaLayers, excludedPaths)
+
+	// Names Mojang changed in a version ("Old->New,..." in source_rewrites): the sources are copied with the new names
+	// and compiled from there, so the shared code keeps the old ones
+	// Longer lists live in versions/<mc>/source-rewrites.txt, one "Old -> New" per line (# starts a comment)
+	def rewriteLines = (findProperty('source_rewrites') ?: '').toString().tokenize(',')
+	def rewritesFile = new File(repoRoot, "versions/${mcTarget}/source-rewrites.txt")
+	if (rewritesFile.exists()) {
+		rewriteLines.addAll(rewritesFile.readLines().findAll { !it.trim().isEmpty() && !it.trim().startsWith('#') })
+	}
+	def rewrites = rewriteLines.collect { it.split('->', 2)*.trim() as String[] }.findAll { it.length == 2 }
+	if (!rewrites.isEmpty()) {
+		def sourceSet = sourceSets.getByName(sourceSetName)
+		def chosen = [:]
+		sourceSet.java.asFileTree.visit { details ->
+			if (!details.directory) {
+				chosen[details.relativePath.pathString] = details.file
+			}
+		}
+		def rewrittenDir = layout.buildDirectory.dir("rewritten-src/${sourceSetName}").get().asFile
+		def rewriteTask = tasks.register("rewriteSources${sourceSetName.capitalize()}", Sync) {
+			chosen.each { path, file ->
+				from(file) {
+					into(path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : '')
+				}
+			}
+			into rewrittenDir
+			// UTF-8 like the compiler, or characters such as the editor's bullets get mangled
+			filteringCharset = 'UTF-8'
+			// Changing a rule has to copy the sources again
+			inputs.property('rewrites', rewrites.collect { it.join('->') }.join(','))
+			filter { String line ->
+				def result = line
+				// A plain name is replaced as a whole word; anything longer (a call, a package) exactly as written, and not
+				// inside a longer name
+				rewrites.each { pair ->
+					def plainName = pair[0] ==~ /\w+/
+					def pattern = plainName ? "\\b${pair[0]}\\b" : java.util.regex.Pattern.quote(pair[0]) + (pair[0] ==~ /.*\w/ ? '\\b' : '')
+					result = result.replaceAll(pattern, java.util.regex.Matcher.quoteReplacement(pair[1]))
+				}
+				result
+			}
+		}
+		sourceSet.java.srcDirs = [rewrittenDir]
+		sourceSet.java.setExcludes([])
+		tasks.named(sourceSet.compileJavaTaskName) { dependsOn rewriteTask }
+		// The sources jar packs every source set's (rewritten) sources
+		tasks.matching { it.name == sourceSet.sourcesJarTaskName || it.name == 'sourcesJar' }.configureEach { dependsOn rewriteTask }
+	}
+
+	def overrideResourcesDir = new File(repoRoot, "versions/${mcTarget}/src/${sourceSetName}/resources")
+	if (overrideResourcesDir.exists()) {
+		def defaultResourcesDir = new File(repoRoot, "src/${sourceSetName}/resources")
+		def overrideResourcePaths = []
+		fileTree(overrideResourcesDir).files.each { overrideFile ->
+			overrideResourcePaths.add(overrideResourcesDir.toPath().relativize(overrideFile.toPath()).toString().replace('\\', '/'))
+		}
+		sourceSets.named(sourceSetName) {
+			resources.srcDir overrideResourcesDir
+			resources.exclude { details ->
+				overrideResourcePaths.contains(details.relativePath.pathString) && details.file.toPath().startsWith(defaultResourcesDir.toPath())
+			}
+		}
+	}
+}
+
+// Sodium for 1.20.x only accepts the LWJGL that version shipped with, while the development game pulls a newer one
+if (mcTarget.startsWith("1.20")) {
+	configurations.configureEach {
+		resolutionStrategy.eachDependency { details ->
+			if (details.requested.group == "org.lwjgl") {
+				details.useVersion "3.3.1"
+			}
+		}
+	}
+}
+
+dependencies {
+	// To change the versions see versions/<mc>/gradle.properties
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	if (unobfuscated) {
+		implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+		implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	} else {
+		mappings loom.officialMojangMappings()
+		modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+		modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	}
+
+	if (findProperty('geckolib_version')) {
+		// Only its API, to compile the optional bone mixin: its own dependencies are not needed (or published everywhere)
+		def geckolib = "software.bernie.geckolib:geckolib-fabric-${project.minecraft_version}:${project.geckolib_version}"
+		if (unobfuscated) {
+			compileOnly(geckolib) { transitive = false }
+		} else {
+			modCompileOnly(geckolib) { transitive = false }
+		}
+	}
+
+	// Test with Sodium and Iris (shaders) in the development game; -PnoCompat=true runs without them
+	if (!project.hasProperty("noCompat") && findProperty('sodium_version')) {
+		def runtimeMod = unobfuscated ? 'localRuntime' : 'modLocalRuntime'
+		add(runtimeMod, "maven.modrinth:sodium:${project.sodium_version}")
+		add(runtimeMod, "maven.modrinth:iris:${project.iris_version}")
+		// Libraries Iris ships inside its jar (their versions change with Iris), taken out of that very jar before the
+		// game starts (see extractIrisLibs)
+		localRuntime fileTree(layout.buildDirectory.dir("iris-libs")) { include '*.jar' }
+	}
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+	inputs.property "minecraft_dependency", project.minecraft_dependency
+	inputs.property "java_version", targetJavaVersion
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version, "minecraft_dependency": project.minecraft_dependency, "java_version": targetJavaVersion
+	}
+
+	// Mixin only accepts a level the game version can run
+	filesMatching("*.mixins.json") {
+		filter { line -> line.replace("\"compatibilityLevel\": \"JAVA_21\"", "\"compatibilityLevel\": \"JAVA_" + targetJavaVersion + "\"") }
+	}
+}
+
+tasks.withType(AbstractCopyTask).configureEach {
+	// A version can replace a shared resource (see versions/<mc>/src/<set>/resources): the version's file wins
+	it.duplicatesStrategy = DuplicatesStrategy.INCLUDE
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = targetJavaVersion
+	it.options.encoding = 'UTF-8'
+	// Show every error of a port at once instead of the first 100
+	it.options.compilerArgs += ['-Xmaxerrs', '1000']
+}
+
+java {
+	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
+	// if it is present.
+	// If you remove this line, sources will not be generated.
+	withSourcesJar()
+
+	if (JavaVersion.current() < JavaVersion.toVersion(targetJavaVersion)) {
+		// 26.x needs Java 25 while Gradle may run on an older JDK
+		toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
+	} else {
+		sourceCompatibility = JavaVersion.toVersion(targetJavaVersion)
+		targetCompatibility = JavaVersion.toVersion(targetJavaVersion)
+	}
+}
+
+tasks.named("sourcesJar") {
+	exclude "fabric.mod.json"
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+
+	from("LICENSE") {
+		rename { "${it}_$projectName"}
+	}
+}
+
+// configure the maven publication
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			from components.java
+		}
+	}
+
+	repositories {
+		// Add repositories to publish to here.
+	}
+}
+
+// Iris keeps its own libraries inside its jar; the development game needs them next to it
+def irisVersion = findProperty('iris_version')
+if (irisVersion && !project.hasProperty("noCompat")) {
+	def extractIrisLibs = tasks.register("extractIrisLibs", Copy) {
+		def irisOnly = configurations.detachedConfiguration(dependencies.create("maven.modrinth:iris:${irisVersion}"))
+		irisOnly.transitive = false
+		from({ zipTree(irisOnly.singleFile) }) {
+			include 'META-INF/jars/*.jar'
+			exclude 'META-INF/jars/fabric-*'
+		}
+		into layout.buildDirectory.dir("iris-libs")
+		eachFile { it.path = it.name }
+		includeEmptyDirs = false
+	}
+	tasks.matching { it.name.startsWith('run') }.configureEach { dependsOn extractIrisLibs }
+}

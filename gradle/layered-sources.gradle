@@ -1,0 +1,39 @@
+// Layered Java sources, shared by the Fabric (Stonecutter) build and the Forge / NeoForge builds.
+//
+// Layers go from lowest to highest priority. A file in a later layer replaces the file with the same
+// package path in every earlier layer, so a game version or loader only keeps the few classes whose API
+// really differs:
+//   src/<sourceSet>/java                        shared code (written against the vcs version)
+//   src/versioned/<overlay>/<sourceSet>/java    classes shared by several game versions (e.g. legacy-1.20)
+//   versions/<mc>/src/<sourceSet>/java          classes only one game version needs
+//   <loader>/<mc>/src/main/java                 loader glue (Forge / NeoForge builds only)
+
+ext.overlayJavaDirs = { File repoRoot, String overlays, String sourceSetName ->
+    (overlays ?: '').tokenize(',').collect { new File(repoRoot, "src/versioned/${it.trim()}/${sourceSetName}/java") }
+}
+
+// excludedPaths: package prefixes ending in '/' or exact file paths, dropped from every layer
+ext.applyLayeredJavaSources = { sourceSet, List<File> layers, List<String> excludedPaths = [] ->
+    def roots = layers.findAll { it.isDirectory() }.collect { it.toPath().toAbsolutePath().normalize() }
+    def winningLayer = [:]
+    roots.eachWithIndex { root, index ->
+        project.fileTree(root.toFile()).matching { include '**/*.java' }.files.each { file ->
+            winningLayer[root.relativize(file.toPath().toAbsolutePath().normalize()).toString().replace('\\', '/')] = index
+        }
+    }
+
+    sourceSet.java.srcDirs = roots.collect { it.toFile() }
+    sourceSet.java.exclude { details ->
+        if (details.directory) {
+            return false
+        }
+        def path = details.relativePath.pathString
+        if (excludedPaths.any { it.endsWith('/') ? path.startsWith(it) : path == it }) {
+            return true
+        }
+        def file = details.file.toPath().toAbsolutePath().normalize()
+        def layer = roots.findIndexOf { file.startsWith(it) }
+        // Files outside the layers (sources rewritten for a version) are kept as they are
+        return layer >= 0 && winningLayer[path] != layer
+    }
+}

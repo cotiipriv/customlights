@@ -1,0 +1,25 @@
+{
+	"required": true,
+	"package": "com.cotii.customlights.client.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"BlockEntityRenderDispatcherMixin",
+		"BlockModelDeserializerMixin",
+		"BlockModelMixin",
+		"EntityRenderDispatcherMixin",
+		"ClientLevelMixin",
+		"GameRendererMixin",
+		"ItemRendererMixin",
+		"ItemModelResolverMixin",
+		"ItemStackRenderStateMixin",
+		"LevelRendererAccessor",
+		"ParticleEngineMixin",
+		"ParticleMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}

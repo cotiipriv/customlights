@@ -1,0 +1,9 @@
+{
+	"required": false,
+	"package": "com.cotii.customlights.client.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [],
+	"injectors": {
+		"defaultRequire": 0
+	}
+}

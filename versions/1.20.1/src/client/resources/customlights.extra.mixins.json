@@ -1,0 +1,11 @@
+{
+	"required": false,
+	"package": "com.cotii.customlights.client.mixin",
+	"compatibilityLevel": "JAVA_17",
+	"client": [
+		"RenderChunkInfoAccessor"
+	],
+	"injectors": {
+		"defaultRequire": 0
+	}
+}

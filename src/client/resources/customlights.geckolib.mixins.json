@@ -1,0 +1,12 @@
+{
+	"required": false,
+	"package": "com.cotii.customlights.client.mixin.geckolib",
+	"plugin": "com.cotii.customlights.client.compat.OptionalMixinPlugin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"GeoRendererMixin"
+	],
+	"injectors": {
+		"defaultRequire": 0
+	}
+}

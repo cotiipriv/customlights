@@ -1,0 +1,210 @@
+// Shared by forge/1.20.1 and forge/1.20.4 (applied from their build.gradle, after the ForgeGradle and MixinGradle
+// plugins). The mod compiles from the same layers as the Fabric build (see gradle/layered-sources.gradle): the shared
+// sources, the legacy-1.20 overlay, the classes of this game version, then forge/shared (the Forge entry point and
+// the small stand-ins for the Fabric API calls) and this build's own classes. The sources are copied with their
+// Fabric API imports pointed at those stand-ins, so the shared code stays untouched.
+
+version = mod_version
+group = mod_group_id
+
+// NeoForge 1.20.1 is the same loader with another name (it forked Forge there), so its build is this one pointed at
+// the other artifact: loader_name and loader_artifact come from the project's gradle.properties.
+def loaderName = project.findProperty('loader_name') ?: 'forge'
+def loaderArtifact = project.findProperty('loader_artifact') ?: "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+base {
+    archivesName = "${mod_id}-${loaderName}-${minecraft_version}"
+}
+
+repositories {
+    maven {
+        name = 'Forge'
+        url = 'https://maven.minecraftforge.net/'
+    }
+    maven {
+        name = 'NeoForged'
+        url = 'https://maven.neoforged.net/releases'
+    }
+    // Embeddium and Oculus: only in the development game, to test compatibility (never bundled)
+    maven {
+        name = 'Modrinth'
+        url = 'https://api.modrinth.com/maven'
+        content {
+            includeGroup 'maven.modrinth'
+        }
+    }
+    mavenCentral()
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(java_version as int)
+
+def repoRoot = file('../..')
+def mixinConfigs = ['customlights.client.mixins.json', 'customlights.extra.mixins.json', 'customlights.iris.mixins.json']
+
+minecraft {
+    mappings channel: 'official', version: minecraft_version
+    copyIdeResources = true
+
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'info'
+            property 'customlights.devtest', project.findProperty('devtest') ?: 'false'
+            property 'customlights.devtest.quit', project.findProperty('devtestQuit') ?: 'false'
+            property 'customlights.devtest.scene', project.findProperty('devtestScene') ?: 'smoke'
+            args '--username', 'CotiiDev'
+            mixinConfigs.each { arg "-mixin.config=${it}" }
+            mods {
+                customlights {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+mixin {
+    add sourceSets.main, 'customlights.refmap.json'
+    mixinConfigs.each { config it }
+}
+
+apply from: new File(repoRoot, 'gradle/layered-sources.gradle')
+def layers = []
+['main', 'client'].each { set -> layers.add(new File(repoRoot, "src/${set}/java")) }
+['main', 'client'].each { set -> layers.addAll(overlayJavaDirs(repoRoot, project.findProperty('version_overlays') as String, set)) }
+['main', 'client'].each { set -> layers.add(new File(repoRoot, "versions/${minecraft_version}/src/${set}/java")) }
+layers.add(file(project.findProperty('shared_java') ?: '../shared/java'))
+layers.add(file('src/main/java'))
+// The Fabric entry point, the optional GeckoLib mixin and the Fabric-only model loading hook stay out
+applyLayeredJavaSources(sourceSets.main, layers, ['com/cotii/customlights/client/CustomlightsClient.java', 'com/cotii/customlights/client/mixin/geckolib/'])
+
+// Copy of the chosen sources with the Fabric API imports pointed at forge/shared's stand-ins
+def chosen = [:]
+sourceSets.main.java.asFileTree.visit { details ->
+    if (!details.directory) {
+        chosen[details.relativePath.pathString] = details.file
+    }
+}
+def rewrittenDir = layout.buildDirectory.dir('rewritten-src').get().asFile
+def rewrites = [
+    'net.fabricmc.fabric.api.': 'com.cotii.customlights.forge.fabric.',
+    'net.fabricmc.loader.api.FabricLoader': 'com.cotii.customlights.forge.fabric.loader.FabricLoader',
+]
+def rewriteSources = tasks.register('rewriteSources', Sync) {
+    chosen.each { path, source ->
+        from(source) {
+            into(path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : '')
+        }
+    }
+    into rewrittenDir
+    inputs.property('rewrites', rewrites.toString())
+    filteringCharset = 'UTF-8'
+    filter { String line ->
+        def result = line
+        rewrites.each { from, to -> result = result.replace(from, to) }
+        result
+    }
+}
+sourceSets.main.java.srcDirs = [rewrittenDir]
+sourceSets.main.java.setExcludes([])
+tasks.named('compileJava') { dependsOn rewriteSources }
+tasks.matching { it.name == 'sourcesJar' }.configureEach { dependsOn rewriteSources }
+
+sourceSets {
+    main {
+        resources {
+            srcDirs = [
+                'src/main/resources',
+                new File(repoRoot, "versions/${minecraft_version}/src/client/resources"),
+                new File(repoRoot, 'src/client/resources'),
+                new File(repoRoot, 'src/main/resources')
+            ]
+            exclude 'fabric.mod.json'
+            exclude 'customlights.geckolib.mixins.json'
+        }
+        output.resourcesDir = layout.buildDirectory.dir('classes/java/main').get().asFile
+    }
+}
+
+dependencies {
+    minecraft loaderArtifact
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+    // MixinExtras (WrapOperation, Local, Share): compiled against, bundled in the jar and loaded in development
+    compileOnly(annotationProcessor('io.github.llamalad7:mixinextras-common:0.4.1'))
+    implementation(jarJar('io.github.llamalad7:mixinextras-forge:0.4.1')) {
+        jarJar.ranged(it, '[0.4.1,)')
+    }
+    // -PnoCompat=true runs without them
+    if (!project.hasProperty('noCompat') && project.findProperty('embeddium_version')) {
+        runtimeOnly fg.deobf("maven.modrinth:embeddium:${embeddium_version}")
+        if (project.findProperty('oculus_version')) {
+            runtimeOnly fg.deobf("maven.modrinth:oculus:${oculus_version}")
+        }
+    }
+}
+
+tasks.withType(AbstractCopyTask).configureEach {
+    // A version's resources (its mixin lists) replace the shared ones
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+processResources {
+    def props = [
+        minecraft_version: minecraft_version,
+        minecraft_next: minecraft_next,
+        loader_major: forge_version.tokenize('.')[0],
+        mod_id: mod_id,
+        mod_name: mod_name,
+        mod_version: mod_version,
+        mod_authors: mod_authors,
+        mod_license: mod_license,
+        mod_description: mod_description
+    ]
+    inputs.properties props
+    filesMatching('META-INF/mods.toml') {
+        expand props
+    }
+    // Java 17 game, and the refmap that maps the mixin targets to the names the game runs with
+    filesMatching('*.mixins.json') {
+        filter { line ->
+            line.replace('"compatibilityLevel": "JAVA_21"', '"compatibilityLevel": "JAVA_17"')
+                .replace('"package":', '"refmap": "customlights.refmap.json",\n\t"package":')
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = (java_version as int)
+    options.encoding = 'UTF-8'
+}
+
+jar {
+    from(new File(repoRoot, 'LICENSE')) {
+        rename { "${it}_${mod_id}" }
+    }
+    manifest {
+        attributes([
+            'Specification-Title': mod_id,
+            'Specification-Vendor': mod_authors,
+            'Specification-Version': '1',
+            'Implementation-Title': project.name,
+            'Implementation-Version': mod_version,
+            'Implementation-Vendor': mod_authors,
+            'MixinConfigs': mixinConfigs.join(',')
+        ])
+    }
+    finalizedBy 'reobfJar'
+}
+
+// The jar to install is the one with MixinExtras inside, remapped to the names the game runs with
+jarJar.enable()
+tasks.named('jarJar') {
+    archiveClassifier = ''
+}
+jar {
+    archiveClassifier = 'slim'
+}
+reobf {
+    jarJar {}
+}
+tasks.named('jarJar') { finalizedBy 'reobfJarJar' }

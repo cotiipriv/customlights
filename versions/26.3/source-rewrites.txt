@@ -1,0 +1,59 @@
+# Names Mojang and Fabric changed up to 26.2 (see build.gradle): the shared sources keep the 1.21.1 names
+# As 1.21.11:
+ResourceLocation -> Identifier
+net.minecraft.client.renderer.RenderType -> net.minecraft.client.renderer.rendertype.RenderType
+net.minecraft.Util -> net.minecraft.util.Util
+amera.getPosition() -> amera.position()
+getMainCamera().getPosition() -> getMainCamera().position()
+amera.getEntity() -> amera.entity()
+amera().getEntity() -> amera().entity()
+Profile().getName() -> Profile().name()
+getWindow().getWindow() -> getWindow().handle()
+invertYMouse() -> invertMouseY()
+dimension().location() -> dimension().identifier()
+# Screens extract what they draw (renamed before GuiGraphics itself)
+void renderBackground(GuiGraphics graphics -> void extractBackground(GuiGraphics graphics
+public void render(GuiGraphics graphics, int mouseX, int mouseY, float delta) -> public void extractRenderState(GuiGraphics graphics, int mouseX, int mouseY, float delta)
+# 26.x: the screen and the chat belong to the GUI, the camera and main target to the game renderer
+GuiGraphics -> GuiGraphicsExtractor
+graphics.drawString( -> graphics.text(
+graphics.renderFakeItem( -> graphics.fakeItem(
+net.minecraft.client.gui.render.state. -> net.minecraft.client.renderer.state.gui.
+net.minecraft.client.renderer.state.CameraRenderState -> net.minecraft.client.renderer.state.level.CameraRenderState
+minecraft.setScreen( -> minecraft.gui.setScreen(
+Minecraft.getInstance().setScreen( -> Minecraft.getInstance().gui.setScreen(
+minecraft.screen -> minecraft.gui.screen()
+Minecraft.getInstance().screen -> Minecraft.getInstance().gui.screen()
+.getMainRenderTarget() -> .gameRenderer.mainRenderTarget()
+getMainCamera() -> mainCamera()
+gui.getChat() -> gui.hud.getChat()
+gameRenderer.getRenderDistance() -> options.getEffectiveRenderDistance() * 16.0f
+LevelRenderer.getLightColor( -> net.minecraft.util.LightCoordsUtil.getLightCoords(
+EntityType.PLAYER -> net.minecraft.world.entity.EntityTypes.PLAYER
+entity.getTags() -> entity.entityTags()
+# Chunk positions are records
+ChunkPos.asLong( -> ChunkPos.pack(
+getPos().toLong() -> getPos().pack()
+getPos().x -> getPos().x()
+getPos().z -> getPos().z()
+center.x -> center.x()
+center.z -> center.z()
+# The GL state keeps blending and the color mask per draw buffer
+GlStateManager._enableBlend() -> GlStateManager._enableBlend(0)
+GlStateManager._disableBlend() -> GlStateManager._disableBlend(0)
+GlStateManager._colorMask(red, green, blue, alpha) -> GlStateManager._colorMask((red ? 1 : 0) | (green ? 2 : 0) | (blue ? 4 : 0) | (alpha ? 8 : 0))
+# Fabric API names
+ClientCommandManager -> ClientCommands
+keybinding.v1.KeyBindingHelper -> keymapping.v1.KeyMappingHelper
+KeyBindingHelper.registerKeyBinding( -> KeyMappingHelper.registerKeyMapping(
+C2SPlayChannelEvents -> ServerboundPlayChannelEvents
+PayloadTypeRegistry.playS2C() -> PayloadTypeRegistry.clientboundPlay()
+PayloadTypeRegistry.playC2S() -> PayloadTypeRegistry.serverboundPlay()
+# The GUI collects elements with add*, and the light map is its own class
+.submitGuiElement( -> .addGuiElement(
+net.minecraft.client.renderer.LightTexture. -> net.minecraft.client.renderer.Lightmap.
+import net.minecraft.client.renderer.MultiBufferSource; ->
+# Typed characters are whole code points
+new CharacterEvent(character, 0) -> new CharacterEvent(character)
+# Spawn eggs are found as item holders
+net.minecraft.world.item.SpawnEggItem egg = net.minecraft.world.item.SpawnEggItem.byId(type); -> net.minecraft.world.item.Item egg = net.minecraft.world.item.SpawnEggItem.byId(type).map(net.minecraft.core.Holder::value).orElse(null);

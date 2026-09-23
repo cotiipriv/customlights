@@ -1,0 +1,30 @@
+pluginManagement {
+	repositories {
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		maven {
+			name = 'Kikugie'
+			url = 'https://maven.kikugie.dev/releases'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
+}
+
+plugins {
+	id 'dev.kikugie.stonecutter' version '0.7.8'
+}
+
+// Should match your modid
+rootProject.name = 'customlights'
+
+stonecutter {
+	centralScript = 'build.gradle'
+	shared {
+		versions '1.20.1', '1.20.4', '1.21.1', '1.21.4', '1.21.5', '1.21.8', '1.21.11', '26.2'
+		vcsVersion = '1.21.1'
+	}
+	create rootProject
+}
